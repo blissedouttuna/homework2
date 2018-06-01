@@ -1,0 +1,147 @@
+---
+title: "Homework2"
+author: "Josh Graybiel"
+date: "May 17, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Reading the file in
+```{r}
+library(tidyverse)
+gaz_raw <-
+  read_delim(
+    "CA_Features_20180401.txt",
+    delim = "|",
+    col_types = cols(.default = col_character())
+  )
+
+gaz_raw
+
+as_tibble(gaz_raw)
+```
+Tiddying up the file and organizing the headers.
+
+```{r}
+gaz <-
+  select(gaz_raw,
+    id         = FEATURE_ID,
+    name       = FEATURE_NAME,
+    class      = FEATURE_CLASS,
+    state      = STATE_ALPHA,
+    county     = COUNTY_NAME,
+    lat        = PRIM_LAT_DEC,
+    lon        = PRIM_LONG_DEC,
+    src_lat    = SOURCE_LAT_DEC,
+    src_lon    = SOURCE_LONG_DEC,
+    elev       = ELEV_IN_M,
+    map        = MAP_NAME,
+    created_on = DATE_CREATED,
+    edited_on  = DATE_EDITED
+  )
+gaz
+
+gaz$id         = parse_integer(gaz$id)
+gaz$lat        = parse_double(gaz$lat, na = "0")
+gaz$lon        = parse_double(gaz$lon, na = "0")
+gaz$src_lat    = parse_double(gaz$src_lat)
+gaz$src_lon    = parse_double(gaz$src_lon)
+gaz$elev       = parse_integer(gaz$elev)
+gaz$map        = parse_character(gaz$map, na = "Unknown")
+gaz$created_on = parse_date(gaz$created_on, format = "%m/%d/%Y")
+gaz$edited_on  = parse_date(gaz$edited_on, format = "%m/%d/%Y")
+
+gaz
+
+### deleting rows where the primary latitude or longitude are unknown and the feature is not in California
+gaz <-
+  filter(gaz,
+    !is.na(lon) &
+    !is.na(lat) &
+    state == "CA"
+  )
+gaz
+
+### write the gaz tibble to a CSV file using | as a delimiter
+
+wrote <- write_delim(gaz,
+  "CA.csv",
+  delim = "|",
+  na = ""
+)
+wrote
+
+```
+
+Creating a Database for the gaz_edit file
+```{r}
+library(dplyr)
+library(DBI)
+library(RSQLite)
+
+con <- DBI::dbConnect(RSQLite::SQLite(), path = ":memory")
+
+copy_to(con, gaz, "gaz",
+        temporary = FALSE)
+gaz_db <- tbl(con, "gaz")
+gazdf<- as.data.frame(gaz)
+class(gaz)
+```
+
+Analyzing the Data
+```{r}
+#Question 1
+names<- dbGetQuery(con, "select(`name`), COUNT(`name`) AS count FROM gaz GROUP BY (`name`) ORDER BY count DESC LIMIT 1;")
+
+names
+
+#Question 2
+names2<- dbGetQuery(con, "select(`class`), COUNT(`class`) AS count FROM gaz GROUP BY (`class`) ORDER BY count ASC LIMIT 2;")
+
+names2
+
+#Question 3
+justcoordinatesdf<- select(gaz, "county" , "lat","lon") %>% group_by(`county`) 
+
+coordinateanalysis<- summarize(justcoordinatesdf, 
+                        maxlat=max(`lat`),
+                        minlat=min(`lat`), 
+                        maxlong=max(`lon`),
+                        minlong=min(`lon`))
+
+findingmiddleredo<-coordinateanalysis %>% 
+  mutate(centerlat=maxlat+minlat/2, 
+         centerlong=maxlong+minlong/2
+  )
+
+findingmiddleredo
+
+test<- copy_to(con, findingmiddleredo, 
+        temporary = FALSE)
+
+q3<- dbGetQuery(con,'
+  SELECT `county` , `centerlat` , `centerlong` 
+  FROM `findingmiddleredo` 
+  GROUP BY ("county")
+')
+
+#Question 4
+gazq4<- copy_to(con, gazdf, 
+        temporary = FALSE)
+
+
+q4df<- dbGetQuery(con," SELECT `county`, `class`, 
+       CASE 
+        WHEN `class` IN ('Airport', 'Bridge', 'Building', 'Canal', 'Cemetery', 'Census', 'Church', 'Civil', 'Crossing', 'Dam', 'Harbor', 'Hospital', 'Locale', 'Military', 'Mine', 'Oilfield', 'Park', 'Pillar', 'Populated Place', 'Post Office', 'Reserve', 'Reservoir', 'School', 'Tower', 'Trail', 'Tunnel', 'Well')
+         THEN 'manmade'
+         ELSE 'natural'
+      END AS 'category'
+  FROM `gazdf`
+  GROUP BY (`county`)
+")   
+
+q4tbl<- copy_to(con, q4df,
+                temporary = FALSE)
+```
